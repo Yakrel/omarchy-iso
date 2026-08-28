@@ -1,0 +1,140 @@
+# Prepared and maintained by Berkay Yetgin
+name: Build Custom Omarchy ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "basecamp/omarchy Commit SHA or Branch"
+        required: true
+        default: "83881e979b35468c3e7d60b171e319ede61a88fd"
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout omarchy-iso
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+
+      - name: Checkout basecamp/omarchy
+        uses: actions/checkout@v4
+        with:
+          repository: basecamp/omarchy
+          ref: ${{ github.event.inputs.commit }}
+          path: omarchy-source
+          fetch-depth: 0
+
+      - name: Checkout omacom-io/omarchy-pkgs
+        uses: actions/checkout@v4
+        with:
+          repository: omacom-io/omarchy-pkgs
+          path: omarchy-pkgs
+          fetch-depth: 0
+
+      - name: Verify Omarchy Commit Info
+        run: |
+          echo "=========================================="
+          echo "Building ISO with exact basecamp/omarchy commit:"
+          git -C omarchy-source log -1 --stat
+          echo "=========================================="
+
+      - name: Build ISO
+        run: |
+          NO_BOOT_OFFER=1 ./bin/omarchy-iso-make --edge --local-source "$(pwd)/omarchy-source" "$(pwd)/omarchy-pkgs"
+
+      - name: Prepare Release Assets & Checksums
+        run: |
+          cd ./release
+          echo "=== Generating SHA256 Checksums for original ISO ==="
+          sha256sum *.iso > SHA256SUMS
+          cat SHA256SUMS
+
+          # GitHub Release assets enforce a strict 2 GiB (2,147,483,648 bytes) limit per file.
+          # If an ISO exceeds 2000MB (~1.95 GiB), archive it into 1900MB multi-volume 7z parts (.7z.001, .7z.002...)
+          # with store mode (-mx0) for instant extraction via WinRAR / 7-Zip.
+          SPLIT_THRESHOLD_BYTES=$((2000 * 1024 * 1024))
+          for iso in *.iso; do
+            [ -f "$iso" ] || continue
+            size=$(stat -c%s "$iso")
+            if [ "$size" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
+              echo "File $iso ($size bytes) exceeds GitHub Release asset limit (2 GiB)."
+              echo "Creating 1900MB multi-volume 7z archive..."
+              7z a -v1900m -mx0 "${iso%.iso}.7z" "$iso"
+              echo "Generated multi-volume parts:"
+              ls -lh "${iso%.iso}.7z."*
+              echo "" >> SHA256SUMS
+              echo "# 7-Zip Multi-volume Archive Parts:" >> SHA256SUMS
+              sha256sum "${iso%.iso}.7z."* >> SHA256SUMS
+              rm -f "$iso"
+            fi
+          done
+
+          echo "=== Final Assets in ./release ==="
+          ls -lh
+          echo "=== Final SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Prune Old Releases & Tags (Keep Only Latest 1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Pruning previous releases and tags to keep only the latest ==="
+          for release_tag in $(gh release list --json tagName --jq '.[].tagName'); do
+            echo "Deleting previous release and tag: $release_tag"
+            gh release delete "$release_tag" -y --cleanup-tag || true
+          done
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: build-${{ github.event.inputs.commit }}-${{ github.run_number }}
+          name: "Omarchy ISO - Commit ${{ github.event.inputs.commit }}"
+          body: |
+            ### Custom Omarchy ISO Build
+            - **Basecamp Omarchy Commit:** `${{ github.event.inputs.commit }}`
+            - **Build Run:** `${{ github.run_number }}`
+
+            ---
+
+            ### 📥 Download & Extraction Instructions
+
+            Due to GitHub Releases 2 GiB per-asset file size limit, large ISOs are packaged as multi-volume 7z archives (`.7z.001`, `.7z.002`, ...).
+
+            #### 🪟 Windows (WinRAR / 7-Zip / NanaZip)
+            1. Download all `.7z.00*` parts and `SHA256SUMS` into the same folder.
+            2. Right-click on the `.7z.001` file and select **"Extract Here" (Buraya Çıkart)** or open with WinRAR / 7-Zip.
+            3. WinRAR / 7-Zip will automatically merge all parts and extract the full `.iso` file.
+
+            #### 🐧 Linux / 🍎 macOS
+            ```bash
+            # Download all parts and extract the ISO:
+            7z x *.7z.001
+
+            # Verify integrity against the original ISO:
+            sha256sum -c SHA256SUMS
+            ```
+          files: |
+            ./release/*
+          draft: false
+          prerelease: false
+
+      - name: Upload newly built ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-iso-${{ github.event.inputs.commit }}-${{ github.run_number }}
+          path: ./release/*
+          retention-days: 1
