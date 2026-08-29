@@ -14,11 +14,18 @@ on:
         required: true
         default: "f0672772d294800e75ecf0365656ff84d50c2a8e"
 
+# Only the newest ISO build matters. A newer build cancels an older one that is
+# still running so we do not waste Actions minutes or storage.
+concurrency:
+  group: omarchy-iso-latest
+  cancel-in-progress: true
+
 jobs:
   build-iso:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     env:
       OMARCHY_COMMIT: ${{ github.event.inputs.commit || 'f0672772d294800e75ecf0365656ff84d50c2a8e' }}
     steps:
@@ -92,16 +99,6 @@ jobs:
           echo "=== Final SHA256SUMS ==="
           cat SHA256SUMS
 
-      - name: Prune Old Releases & Tags (Keep Only Latest 1)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "=== Pruning previous releases and tags to keep only the latest ==="
-          for release_tag in $(gh release list --json tagName --jq '.[].tagName'); do
-            echo "Deleting previous release and tag: $release_tag"
-            gh release delete "$release_tag" -y --cleanup-tag || true
-          done
-
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         if: success()
@@ -145,3 +142,61 @@ jobs:
           name: omarchy-iso-${{ env.OMARCHY_COMMIT }}-${{ github.run_number }}
           path: ./release/*
           retention-days: 1
+
+      - name: Cleanup old releases, tags, artifacts and workflow runs
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_TAG: build-${{ env.OMARCHY_COMMIT }}-${{ github.run_number }}
+        run: |
+          set -uo pipefail
+
+          echo "=== Keeping only current release: $CURRENT_TAG ==="
+          mapfile -t release_tags < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[].tag_name'
+          )
+          for tag in "${release_tags[@]}"; do
+            if [ "$tag" != "$CURRENT_TAG" ]; then
+              echo "Deleting old release and tag: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            fi
+          done
+
+          echo "=== Removing leftover old build tags ==="
+          mapfile -t build_refs < <(
+            gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/build-" \
+              --jq '.[].ref' 2>/dev/null || true
+          )
+          for ref in "${build_refs[@]}"; do
+            tag="${ref#refs/tags/}"
+            if [ "$tag" != "$CURRENT_TAG" ]; then
+              echo "Deleting old build tag: $tag"
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" || true
+            fi
+          done
+
+          echo "=== Removing artifacts from every older run ==="
+          mapfile -t old_artifact_ids < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+              --jq ".artifacts[] | select(.workflow_run.id != $CURRENT_RUN_ID) | .id"
+          )
+          for artifact_id in "${old_artifact_ids[@]}"; do
+            echo "Deleting old artifact: $artifact_id"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" || true
+          done
+
+          echo "=== Removing every older Actions workflow run ==="
+          mapfile -t old_run_ids < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+              --jq ".workflow_runs[] | select(.id != $CURRENT_RUN_ID) | .id"
+          )
+          for run_id in "${old_run_ids[@]}"; do
+            echo "Deleting old workflow run: $run_id"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" || true
+          done
+
+          echo "=== Cleanup complete ==="
+          echo "Kept release/tag: $CURRENT_TAG"
+          echo "Kept workflow run: $CURRENT_RUN_ID"
