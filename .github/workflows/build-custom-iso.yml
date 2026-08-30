@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: "basecamp/omarchy Commit SHA or Branch"
+        description: "omacom/omarchy Commit SHA or Branch"
         required: true
-        default: "f0672772d294800e75ecf0365656ff84d50c2a8e"
+        default: "002c70a5442a300c6bb22b687d1726e83da5ca44"
 
 # Only the newest ISO build matters. A newer build cancels an older one that is
 # still running so we do not waste Actions minutes or storage.
@@ -27,7 +27,7 @@ jobs:
       contents: write
       actions: write
     env:
-      OMARCHY_COMMIT: ${{ github.event.inputs.commit || 'f0672772d294800e75ecf0365656ff84d50c2a8e' }}
+      OMARCHY_COMMIT: ${{ github.event.inputs.commit || '002c70a5442a300c6bb22b687d1726e83da5ca44' }}
     steps:
       - name: Checkout omarchy-iso
         uses: actions/checkout@v4
@@ -41,10 +41,10 @@ jobs:
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@v1.3.1
 
-      - name: Checkout basecamp/omarchy
+      - name: Checkout omacom/omarchy
         uses: actions/checkout@v4
         with:
-          repository: basecamp/omarchy
+          repository: omacom/omarchy
           ref: ${{ env.OMARCHY_COMMIT }}
           path: omarchy-source
           fetch-depth: 0
@@ -59,7 +59,7 @@ jobs:
       - name: Verify Omarchy Commit Info
         run: |
           echo "=========================================="
-          echo "Building ISO with exact basecamp/omarchy commit: $OMARCHY_COMMIT"
+          echo "Building ISO with exact omacom/omarchy commit: $OMARCHY_COMMIT"
           git -C omarchy-source log -1 --stat
           echo "=========================================="
 
@@ -109,7 +109,7 @@ jobs:
           name: "Omarchy ISO - Commit ${{ env.OMARCHY_COMMIT }}"
           body: |
             ### Custom Omarchy ISO Build
-            - **Basecamp Omarchy Commit:** `${{ env.OMARCHY_COMMIT }}`
+            - **Omarchy Commit:** `${{ env.OMARCHY_COMMIT }}`
             - **Build Run:** `${{ github.run_number }}`
 
             ---
